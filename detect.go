@@ -39,6 +39,8 @@ func detectStack(dir string) (stack, error) {
 		return stack{"rust", "cargo build --release", "./target/release/" + name}, nil
 	case exists(filepath.Join(dir, "package.json")):
 		return nodeStack(dir)
+	case exists(filepath.Join(dir, "uv.lock")):
+		return uvStack(dir)
 	case exists(filepath.Join(dir, "requirements.txt")) || exists(filepath.Join(dir, "pyproject.toml")):
 		return pythonStack(dir)
 	case exists(filepath.Join(dir, "Gemfile")):
@@ -98,12 +100,47 @@ func pythonStack(dir string) (stack, error) {
 	if exists(filepath.Join(dir, "requirements.txt")) {
 		build = "python3 -m venv .venv && .venv/bin/pip install -r requirements.txt"
 	}
-	for _, f := range []string{"app.py", "main.py", "server.py"} {
+	for _, f := range []string{"app.py", "main.py", "server.py", "bot.py"} {
 		if exists(filepath.Join(dir, f)) {
 			return stack{"python", build, ".venv/bin/python " + f}, nil
 		}
 	}
-	return stack{}, fmt.Errorf("no app.py, main.py or server.py found for the Python entry point")
+	return stack{}, fmt.Errorf("no app.py, main.py, server.py or bot.py found for the Python entry point")
+}
+
+func uvStack(dir string) (stack, error) {
+	build := "uv sync --frozen"
+	if script := firstProjectScript(filepath.Join(dir, "pyproject.toml")); script != "" {
+		return stack{"uv", build, ".venv/bin/" + script}, nil
+	}
+	for _, f := range []string{"app.py", "main.py", "server.py", "bot.py"} {
+		if exists(filepath.Join(dir, f)) {
+			return stack{"uv", build, ".venv/bin/python " + f}, nil
+		}
+	}
+	return stack{}, fmt.Errorf("no [project.scripts] entry or app.py/main.py/server.py/bot.py found for the uv project")
+}
+
+func firstProjectScript(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	inScripts := false
+	for _, line := range strings.Split(string(b), "\n") {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "[") {
+			inScripts = t == "[project.scripts]"
+			continue
+		}
+		if !inScripts || t == "" || strings.HasPrefix(t, "#") {
+			continue
+		}
+		if k, _, ok := strings.Cut(t, "="); ok {
+			return trimQuotes(strings.TrimSpace(k))
+		}
+	}
+	return ""
 }
 
 func rubyStack(dir string) (stack, error) {

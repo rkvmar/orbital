@@ -2,6 +2,12 @@
 
 a tiny local deploy system
 
+## Install
+
+```sh
+./install.sh
+```
+
 ## Usage
 
 ```sh

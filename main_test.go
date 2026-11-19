@@ -62,6 +62,57 @@ func TestNodeStackPreview(t *testing.T) {
 	}
 }
 
+func TestUvStack(t *testing.T) {
+	dir := t.TempDir()
+	for _, f := range []string{"uv.lock", "pyproject.toml"} {
+		if err := os.WriteFile(filepath.Join(dir, f), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := detectStack(dir); err == nil || !strings.Contains(err.Error(), "uv project") {
+		t.Fatalf("expected uv entry point error, got %v", err)
+	}
+
+	pyproject := `[project]
+name = "demo"
+
+[project.scripts]
+demo = "demo:main"
+another = "demo:other"
+
+[tool.uv]
+`
+	if err := os.WriteFile(filepath.Join(dir, "pyproject.toml"), []byte(pyproject), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := detectStack(dir)
+	if err != nil || st.name != "uv" || st.buildCmd != "uv sync --frozen" || st.startCmd != ".venv/bin/demo" {
+		t.Fatalf("unexpected uv stack with script: %+v, %v", st, err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "bot.py"), []byte("print('hi')\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err = detectStack(dir)
+	if err != nil || st.startCmd != ".venv/bin/demo" {
+		t.Fatalf("[project.scripts] should win over a root bot.py: %+v, %v", st, err)
+	}
+	if err := os.Remove(filepath.Join(dir, "bot.py")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "pyproject.toml"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.py"), []byte("print('hi')\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err = detectStack(dir)
+	if err != nil || st.startCmd != ".venv/bin/python main.py" {
+		t.Fatalf("unexpected uv stack with main.py: %+v, %v", st, err)
+	}
+}
+
 func TestDefaultConfigFilled(t *testing.T) {
 	s := service{Name: "demo", URL: "https://example.com/demo.git", Language: "go",
 		BuildCmd: `go build -ldflags="-w -s" -o app .`, StartCmd: "./app", Port: 8081,

@@ -1,0 +1,10 @@
+# local build output
+/orbital
+/orbital.exe
+
+# go test artifacts
+*.test
+coverage.out
+
+# macOS
+.DS_Store
