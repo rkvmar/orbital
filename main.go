@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,12 +23,6 @@ func main() {
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
-	}
-	if os.Args[1] != "help" && os.Args[1] != "-h" && os.Args[1] != "--help" {
-		if err := ensureDocker(); err != nil {
-			fmt.Fprintln(os.Stderr, "orbital:", err)
-			os.Exit(1)
-		}
 	}
 	var err error
 	switch os.Args[1] {
@@ -65,16 +60,15 @@ func main() {
 
 func usage() {
 	fmt.Print(`Usage:
-  orbital launch <git-url> [name]   clone, build with Railpack and run in Docker
-  orbital update <name>             rebuild and redeploy from its git URL
-  orbital config port <name> <port> change a service's host port
-  orbital config container-port <name> <port> change the port the app listens on
-  orbital env <name> [KEY=VALUE...] show or set environment variables
+  orbital launch <git-url> [name]   clone, build and start a service
+  orbital update <name>             rebuild and restart from its git URL
+  orbital config <name>             edit config.toml (blank = detected default)
+  orbital env <name>                edit the service's .env file
   orbital status                    list all services
   orbital log <name>                show a service's logs
-  orbital stop <name>               stop and remove a service container
+  orbital stop <name>               stop a service
   orbital start <name>              start a stopped service
-  orbital remove <name>             delete a service and its image
+  orbital remove <name>             delete a service
 `)
 }
 
@@ -109,57 +103,14 @@ func cmdUpdate(args []string) error {
 }
 
 func cmdConfig(args []string) error {
-	if len(args) != 3 {
-		return fmt.Errorf("usage: orbital config port <name> <port> | orbital config container-port <name> <port>")
+	if len(args) != 1 {
+		return fmt.Errorf("usage: orbital config <name>")
 	}
-	s, err := loadService(args[1])
+	s, err := loadService(args[0])
 	if err != nil {
 		return err
 	}
-	port, err := parsePort(args[2])
-	if err != nil {
-		return err
-	}
-	label := "port"
-	switch args[0] {
-	case "port":
-		services, err := listServices()
-		if err != nil {
-			return err
-		}
-		for _, other := range services {
-			if other.Name != s.Name && other.Port == port {
-				return fmt.Errorf("port %d is already used by %s", port, other.Name)
-			}
-		}
-		s.Port = port
-	case "container-port":
-		s.ContainerPort = port
-		label = "container port"
-	default:
-		return fmt.Errorf("unknown config key %q (use port or container-port)", args[0])
-	}
-	if err := replaceContainer(s); err != nil {
-		return err
-	}
-	fmt.Printf("%s now uses %s %d\n", s.Name, label, port)
-	return nil
-}
-
-func replaceContainer(s service) error {
-	existed := containerState(s.Name) != "missing"
-	if existed {
-		if _, err := docker("rm", "-f", containerName(s.Name)); err != nil {
-			return err
-		}
-	}
-	if err := saveService(s); err != nil {
-		return err
-	}
-	if existed {
-		return startContainer(s)
-	}
-	return nil
+	return editAndApply(s, configPath(s.Name), defaultConfig(s), "config")
 }
 
 func parsePort(raw string) (int, error) {
@@ -171,21 +122,19 @@ func parsePort(raw string) (int, error) {
 }
 
 func deploy(url, name string, port int) error {
-	if err := ensureRailpack(); err != nil {
-		return err
-	}
+	dir := serviceDir(name)
+	cfgPath, epPath := configPath(name), envFilePath(name)
+	configRaw, _ := os.ReadFile(cfgPath)
+	envRaw, _ := os.ReadFile(epPath)
 	var env map[string]string
-	var configuredPort int
 	if old, err := loadService(name); err == nil {
 		env = old.Env
-		configuredPort = old.ContainerPort
-	}
-
-	dir := serviceDir(name)
-	if containerState(name) != "missing" {
-		fmt.Printf("Removing existing %s...\n", name)
-		if _, err := docker("rm", "-f", containerName(name)); err != nil {
-			return err
+		if len(envRaw) == 0 {
+			envRaw = []byte(serializeEnv(env))
+		}
+		if alive(old.PID) {
+			fmt.Printf("Stopping existing %s...\n", name)
+			_ = stopProcess(old.PID)
 		}
 	}
 	if err := os.RemoveAll(dir); err != nil {
@@ -194,55 +143,70 @@ func deploy(url, name string, port int) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-
 	repo := filepath.Join(dir, "repo")
 	fmt.Printf("Cloning %s...\n", url)
 	out, err := exec.Command("git", "clone", "--depth", "1", url, repo).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("clone failed: %w\n%s", err, out)
 	}
-
-	if err := ensureBuildkit(); err != nil {
-		return fmt.Errorf("BuildKit: %w", err)
-	}
-	image := containerName(name)
-	fmt.Printf("Building %s with Railpack...\n", name)
-	if err := railpackBuild(repo, image); err != nil {
-		return fmt.Errorf("build failed: %w", err)
-	}
-
-	s := service{Name: name, URL: url, Image: image, Port: port,
-		ContainerPort: configuredPort, CreatedAt: time.Now(), Env: env}
-	if err := startContainer(s); err != nil {
+	st, err := detectStack(repo)
+	if err != nil {
 		return err
 	}
-	if detected := waitForListenPort(containerName(name)); detected != 0 && detected != s.internalPort() {
-		fmt.Printf("Detected app listening on %d, remapping...\n", detected)
-		s.ContainerPort = detected
-		if _, err := docker("rm", "-f", containerName(name)); err != nil {
-			return err
-		}
-		if err := startContainer(s); err != nil {
-			return err
+	if detected := detectPort(repo); detected != 0 {
+		port = detected
+	}
+	s := service{Name: name, URL: url, Language: st.name, BuildCmd: st.buildCmd,
+		StartCmd: st.startCmd, Port: port, Env: env}
+	if len(configRaw) == 0 {
+		configRaw = []byte(defaultConfig(s))
+	}
+	if len(envRaw) == 0 {
+		envRaw = []byte(serializeEnv(s.Env))
+	}
+	if err := os.WriteFile(cfgPath, configRaw, 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(epPath, envRaw, 0o644); err != nil {
+		return err
+	}
+	s, err = resolve(s)
+	if err != nil {
+		return err
+	}
+	logPath := filepath.Join(dir, "log.txt")
+	if s.BuildCmd != "" {
+		fmt.Printf("Building %s (%s)...\n", name, s.Language)
+		if err := runLogged(repo, logPath, s.Env, "sh", "-c", s.BuildCmd); err != nil {
+			return fmt.Errorf("build failed (see %s): %w", logPath, err)
 		}
 	}
+	fmt.Printf("Starting %s on port %d...\n", name, s.Port)
+	pid, err := startProcess(s, repo, logPath)
+	if err != nil {
+		return fmt.Errorf("start failed: %w", err)
+	}
+	s.PID, s.StartedAt = pid, time.Now()
 	if err := saveService(s); err != nil {
-		_, _ = docker("rm", "-f", containerName(name))
+		_ = stopProcess(pid)
 		return err
 	}
-	fmt.Printf("Deployed %s at http://localhost:%d\n", name, port)
+	fmt.Printf("Deployed %s (%s) at http://localhost:%d, pid %d\n", name, s.Language, s.Port, pid)
 	return nil
 }
 
-func startContainer(s service) error {
-	fmt.Printf("Starting %s on port %d...\n", s.Name, s.Port)
-	args := []string{"run", "-d", "--name", containerName(s.Name),
-		"-p", fmt.Sprintf("%d:%d", s.Port, s.internalPort()), "-e", fmt.Sprintf("PORT=%d", s.internalPort())}
-	for _, k := range envKeys(s.Env) {
-		args = append(args, "-e", k+"="+s.Env[k])
+func restartService(s service) error {
+	if !alive(s.PID) {
+		return nil
 	}
-	_, err := docker(append(args, s.Image)...)
-	return err
+	_ = stopProcess(s.PID)
+	dir := serviceDir(s.Name)
+	pid, err := startProcess(s, filepath.Join(dir, "repo"), filepath.Join(dir, "log.txt"))
+	if err != nil {
+		return err
+	}
+	s.PID, s.StartedAt = pid, time.Now()
+	return saveService(s)
 }
 
 func cmdStatus(args []string) error {
@@ -258,13 +222,15 @@ func cmdStatus(args []string) error {
 		return nil
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "NAME\tSTATUS\tPORT\tURL")
+	fmt.Fprintln(w, "NAME\tLANGUAGE\tSTATUS\tPORT\tPID\tUPTIME")
 	for _, s := range services {
-		status := "stopped"
-		if containerState(s.Name) == "running" {
+		status, pid, uptime := "stopped", "-", "-"
+		if alive(s.PID) {
 			status = "running"
+			pid = fmt.Sprint(s.PID)
+			uptime = time.Since(s.StartedAt).Round(time.Second).String()
 		}
-		fmt.Fprintf(w, "%s\t%s\t%d\t%s\n", s.Name, status, s.Port, s.URL)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\n", s.Name, s.Language, status, s.Port, pid, uptime)
 	}
 	return w.Flush()
 }
@@ -273,15 +239,17 @@ func cmdLog(args []string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: orbital log <name>")
 	}
-	if _, err := loadService(args[0]); err != nil {
-		return err
-	}
-	out, err := docker("logs", containerName(args[0]))
+	s, err := loadService(args[0])
 	if err != nil {
 		return err
 	}
-	fmt.Print(out)
-	return nil
+	f, err := os.Open(filepath.Join(serviceDir(s.Name), "log.txt"))
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = io.Copy(os.Stdout, f)
+	return err
 }
 
 func cmdStop(args []string) error {
@@ -292,14 +260,11 @@ func cmdStop(args []string) error {
 	if err != nil {
 		return err
 	}
-	if containerState(s.Name) == "missing" {
+	if !alive(s.PID) {
 		fmt.Printf("%s is not running.\n", s.Name)
 		return nil
 	}
-	if _, err := docker("stop", containerName(s.Name)); err != nil {
-		return err
-	}
-	if _, err := docker("rm", containerName(s.Name)); err != nil {
+	if err := stopProcess(s.PID); err != nil {
 		return err
 	}
 	fmt.Printf("Stopped %s.\n", s.Name)
@@ -307,49 +272,14 @@ func cmdStop(args []string) error {
 }
 
 func cmdEnv(args []string) error {
-	if len(args) < 1 {
-		return fmt.Errorf("usage: orbital env <name> [KEY=VALUE ...]")
+	if len(args) != 1 {
+		return fmt.Errorf("usage: orbital env <name>")
 	}
 	s, err := loadService(args[0])
 	if err != nil {
 		return err
 	}
-	if len(args) == 1 {
-		keys := envKeys(s.Env)
-		if len(keys) == 0 {
-			fmt.Printf("No environment variables set for %s.\n", s.Name)
-			return nil
-		}
-		for _, k := range keys {
-			fmt.Printf("%s=%s\n", k, s.Env[k])
-		}
-		return nil
-	}
-	env, err := parseEnv(s.Env, args[1:])
-	if err != nil {
-		return err
-	}
-	s.Env = env
-	if err := replaceContainer(s); err != nil {
-		return err
-	}
-	fmt.Printf("Updated environment for %s.\n", s.Name)
-	return nil
-}
-
-func parseEnv(base map[string]string, assignments []string) (map[string]string, error) {
-	env := make(map[string]string, len(base)+len(assignments))
-	for k, v := range base {
-		env[k] = v
-	}
-	for _, item := range assignments {
-		key, value, ok := strings.Cut(item, "=")
-		if !ok || !validEnvKey.MatchString(key) {
-			return nil, fmt.Errorf("invalid env assignment %q (use KEY=VALUE)", item)
-		}
-		env[key] = value
-	}
-	return env, nil
+	return editAndApply(s, envFilePath(s.Name), serializeEnv(s.Env), "env")
 }
 
 func envKeys(env map[string]string) []string {
@@ -369,19 +299,20 @@ func cmdStart(args []string) error {
 	if err != nil {
 		return err
 	}
-	state := containerState(s.Name)
-	if state == "running" {
+	if alive(s.PID) {
 		fmt.Printf("%s is already running.\n", s.Name)
 		return nil
 	}
-	if state != "missing" {
-		if _, err := docker("start", containerName(s.Name)); err != nil {
-			return err
-		}
-	} else if err := startContainer(s); err != nil {
+	dir := serviceDir(s.Name)
+	pid, err := startProcess(s, filepath.Join(dir, "repo"), filepath.Join(dir, "log.txt"))
+	if err != nil {
 		return err
 	}
-	fmt.Printf("Started %s on port %d.\n", s.Name, s.Port)
+	s.PID, s.StartedAt = pid, time.Now()
+	if err := saveService(s); err != nil {
+		return err
+	}
+	fmt.Printf("Started %s on port %d, pid %d.\n", s.Name, s.Port, pid)
 	return nil
 }
 
@@ -393,12 +324,9 @@ func cmdRemove(args []string) error {
 	if err != nil {
 		return err
 	}
-	if containerState(s.Name) != "missing" {
-		if _, err := docker("rm", "-f", containerName(s.Name)); err != nil {
-			return err
-		}
+	if err := stopProcess(s.PID); err != nil {
+		return err
 	}
-	_, _ = docker("rmi", "-f", s.Image)
 	if err := os.RemoveAll(serviceDir(s.Name)); err != nil {
 		return err
 	}

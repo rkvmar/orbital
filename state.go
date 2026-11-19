@@ -10,20 +10,15 @@ import (
 )
 
 type service struct {
-	Name          string            `json:"name"`
-	URL           string            `json:"url"`
-	Image         string            `json:"image"`
-	Port          int               `json:"port"`
-	CreatedAt     time.Time         `json:"createdAt"`
-	Env           map[string]string `json:"env,omitempty"`
-	ContainerPort int               `json:"containerPort,omitempty"`
-}
-
-func (s service) internalPort() int {
-	if s.ContainerPort != 0 {
-		return s.ContainerPort
-	}
-	return 3000
+	Name      string            `json:"name"`
+	URL       string            `json:"url"`
+	Language  string            `json:"language"`
+	BuildCmd  string            `json:"buildCmd"`
+	StartCmd  string            `json:"startCmd"`
+	Port      int               `json:"port"`
+	PID       int               `json:"pid"`
+	Env       map[string]string `json:"env,omitempty"`
+	StartedAt time.Time         `json:"startedAt"`
 }
 
 func rootDir() string {
@@ -36,10 +31,6 @@ func rootDir() string {
 
 func serviceDir(name string) string {
 	return filepath.Join(rootDir(), "services", name)
-}
-
-func containerName(name string) string {
-	return "orbital-" + name
 }
 
 func saveService(s service) error {

@@ -7,9 +7,8 @@ a tiny local deploy system
 ```sh
 orbital launch <git-url> [name]
 orbital update <name>
-orbital config port <name> <port>
-orbital config container-port <name> <port>
-orbital env <name> [KEY=VALUE...]
+orbital config <name>
+orbital env <name>
 orbital stop <name>
 orbital start <name>
 orbital status
