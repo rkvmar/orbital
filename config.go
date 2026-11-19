@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -22,7 +23,10 @@ port = %d
 build = %s
 start = %s
 language = %s
-`, tomlString(s.URL), s.Port, tomlString(s.BuildCmd), tomlString(s.StartCmd), tomlString(s.Language))
+restart_on_crash = %t
+# memory_limit is in MB (0 = unlimited)
+memory_limit = %d
+`, tomlString(s.URL), s.Port, tomlString(s.BuildCmd), tomlString(s.StartCmd), tomlString(s.Language), s.RestartOnCrash, s.MemoryLimitMB)
 }
 
 func tomlString(v string) string {
@@ -118,6 +122,20 @@ func resolve(s service) (service, error) {
 			return s, err
 		}
 		s.Port = p
+	}
+	if v := cfg["restart_on_crash"]; v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return s, fmt.Errorf("invalid restart_on_crash %q (use true or false)", v)
+		}
+		s.RestartOnCrash = b
+	}
+	if v := cfg["memory_limit"]; v != "" {
+		mb, err := strconv.Atoi(v)
+		if err != nil || mb < 0 {
+			return s, fmt.Errorf("invalid memory_limit %q (use 0 for unlimited or a positive number of MB)", v)
+		}
+		s.MemoryLimitMB = mb
 	}
 	envRaw, err := os.ReadFile(envFilePath(s.Name))
 	if err != nil {

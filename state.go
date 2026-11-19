@@ -10,15 +10,17 @@ import (
 )
 
 type service struct {
-	Name      string            `json:"name"`
-	URL       string            `json:"url"`
-	Language  string            `json:"language"`
-	BuildCmd  string            `json:"buildCmd"`
-	StartCmd  string            `json:"startCmd"`
-	Port      int               `json:"port"`
-	PID       int               `json:"pid"`
-	Env       map[string]string `json:"env,omitempty"`
-	StartedAt time.Time         `json:"startedAt"`
+	Name           string            `json:"name"`
+	URL            string            `json:"url"`
+	Language       string            `json:"language"`
+	BuildCmd       string            `json:"buildCmd"`
+	StartCmd       string            `json:"startCmd"`
+	Port           int               `json:"port"`
+	PID            int               `json:"pid"`
+	RestartOnCrash bool              `json:"restartOnCrash,omitempty"`
+	MemoryLimitMB  int               `json:"memoryLimitMB,omitempty"`
+	Env            map[string]string `json:"env,omitempty"`
+	StartedAt      time.Time         `json:"startedAt"`
 }
 
 func rootDir() string {

@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -63,10 +64,12 @@ func TestNodeStackPreview(t *testing.T) {
 
 func TestDefaultConfigFilled(t *testing.T) {
 	s := service{Name: "demo", URL: "https://example.com/demo.git", Language: "go",
-		BuildCmd: `go build -ldflags="-w -s" -o app .`, StartCmd: "./app", Port: 8081}
+		BuildCmd: `go build -ldflags="-w -s" -o app .`, StartCmd: "./app", Port: 8081,
+		RestartOnCrash: true, MemoryLimitMB: 256}
 	cfg := parseConfig(defaultConfig(s))
 	if cfg["url"] != s.URL || cfg["port"] != "8081" || cfg["build"] != s.BuildCmd ||
-		cfg["start"] != s.StartCmd || cfg["language"] != s.Language {
+		cfg["start"] != s.StartCmd || cfg["language"] != s.Language ||
+		cfg["restart_on_crash"] != "true" || cfg["memory_limit"] != "256" {
 		t.Fatalf("config round trip failed: %v", cfg)
 	}
 }
@@ -83,7 +86,7 @@ func TestResolve(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "main.go"), []byte("package main\nfunc main(){listen(\":8081\")}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(configPath("demo"), []byte("port = \"9000\"\nstart = \"./custom\"\n"), 0o644); err != nil {
+	if err := os.WriteFile(configPath("demo"), []byte("port = \"9000\"\nstart = \"./custom\"\nrestart_on_crash = true\nmemory_limit = 512\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(envFilePath("demo"), []byte("API_KEY=secret\n"), 0o644); err != nil {
@@ -93,11 +96,50 @@ func TestResolve(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Port != 9000 || got.StartCmd != "./custom" || got.Env["API_KEY"] != "secret" {
+	if got.Port != 9000 || got.StartCmd != "./custom" || got.Env["API_KEY"] != "secret" || !got.RestartOnCrash || got.MemoryLimitMB != 512 {
 		t.Fatalf("unexpected resolved service: %+v", got)
 	}
 	if got.BuildCmd != "go build -o app ." {
 		t.Fatalf("build should fall back to detection, got %q", got.BuildCmd)
+	}
+}
+
+func TestStartScript(t *testing.T) {
+	s := service{StartCmd: "./app"}
+	if got := startScript(s); !strings.Contains(got, "./app") || strings.Contains(got, "ps -Axo") {
+		t.Fatalf("startScript with no options = %q", got)
+	}
+	s.MemoryLimitMB = 256
+	script := startScript(s)
+	for _, want := range []string{"./app &", "ps -Axo pgid=,rss=", "262144", "kill -9", "wait \"$pid\""} {
+		if !strings.Contains(script, want) {
+			t.Errorf("startScript missing %q: %q", want, script)
+		}
+	}
+	s.RestartOnCrash = true
+	script = startScript(s)
+	for _, want := range []string{"trap 'exit 0' TERM INT", "while :; do", "code=$?", "sleep 1", "done", "ps -Axo pgid=,rss="} {
+		if !strings.Contains(script, want) {
+			t.Errorf("startScript missing %q: %q", want, script)
+		}
+	}
+}
+
+func TestInvalidConfigValues(t *testing.T) {
+	t.Setenv("ORBITAL_HOME", t.TempDir())
+	if err := os.MkdirAll(filepath.Join(serviceDir("demo"), "repo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(envFilePath("demo"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []string{"restart_on_crash = maybe\n", "memory_limit = -1\n", "memory_limit = lots\n"} {
+		if err := os.WriteFile(configPath("demo"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := resolve(service{Name: "demo"}); err == nil {
+			t.Errorf("expected resolve to reject %q", body)
+		}
 	}
 }
 
