@@ -84,11 +84,7 @@ func cmdLaunch(args []string) error {
 	if !validName.MatchString(name) {
 		return fmt.Errorf("invalid name %q (use letters, numbers, - and _)", name)
 	}
-	services, err := listServices()
-	if err != nil {
-		return err
-	}
-	return deploy(url, name, nextPort(services))
+	return deploy(url, name)
 }
 
 func cmdUpdate(args []string) error {
@@ -99,7 +95,7 @@ func cmdUpdate(args []string) error {
 	if err != nil {
 		return err
 	}
-	return deploy(s.URL, s.Name, s.Port)
+	return deploy(s.URL, s.Name)
 }
 
 func cmdConfig(args []string) error {
@@ -115,13 +111,13 @@ func cmdConfig(args []string) error {
 
 func parsePort(raw string) (int, error) {
 	port, err := strconv.Atoi(raw)
-	if err != nil || port < 1 || port > 65535 {
-		return 0, fmt.Errorf("invalid port %q (use 1-65535)", raw)
+	if err != nil || port < 0 || port > 65535 {
+		return 0, fmt.Errorf("invalid port %q (use 0 for none or 1-65535)", raw)
 	}
 	return port, nil
 }
 
-func deploy(url, name string, port int) error {
+func deploy(url, name string) error {
 	dir := serviceDir(name)
 	cfgPath, epPath := configPath(name), envFilePath(name)
 	configRaw, _ := os.ReadFile(cfgPath)
@@ -153,11 +149,8 @@ func deploy(url, name string, port int) error {
 	if err != nil {
 		return err
 	}
-	if detected := detectPort(repo); detected != 0 {
-		port = detected
-	}
 	s := service{Name: name, URL: url, Language: st.name, BuildCmd: st.buildCmd,
-		StartCmd: st.startCmd, Port: port, Env: env}
+		StartCmd: st.startCmd, Port: detectPort(repo), Env: env}
 	if len(configRaw) == 0 {
 		configRaw = []byte(defaultConfig(s))
 	}
@@ -181,7 +174,11 @@ func deploy(url, name string, port int) error {
 			return fmt.Errorf("build failed (see %s): %w", logPath, err)
 		}
 	}
-	fmt.Printf("Starting %s on port %d...\n", name, s.Port)
+	if s.Port == 0 {
+		fmt.Printf("Starting %s...\n", name)
+	} else {
+		fmt.Printf("Starting %s on port %d...\n", name, s.Port)
+	}
 	pid, err := startProcess(s, repo, logPath)
 	if err != nil {
 		return fmt.Errorf("start failed: %w", err)
@@ -191,7 +188,11 @@ func deploy(url, name string, port int) error {
 		_ = stopProcess(pid)
 		return err
 	}
-	fmt.Printf("Deployed %s (%s) at http://localhost:%d, pid %d\n", name, s.Language, s.Port, pid)
+	if s.Port == 0 {
+		fmt.Printf("Deployed %s (%s), pid %d\n", name, s.Language, pid)
+	} else {
+		fmt.Printf("Deployed %s (%s) at http://localhost:%d, pid %d\n", name, s.Language, s.Port, pid)
+	}
 	return nil
 }
 
@@ -224,13 +225,16 @@ func cmdStatus(args []string) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
 	fmt.Fprintln(w, "NAME\tLANGUAGE\tSTATUS\tPORT\tPID\tUPTIME")
 	for _, s := range services {
-		status, pid, uptime := "stopped", "-", "-"
+		status, pid, uptime, port := "stopped", "-", "-", "-"
 		if alive(s.PID) {
 			status = "running"
 			pid = fmt.Sprint(s.PID)
 			uptime = time.Since(s.StartedAt).Round(time.Second).String()
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\n", s.Name, s.Language, status, s.Port, pid, uptime)
+		if s.Port != 0 {
+			port = fmt.Sprint(s.Port)
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", s.Name, s.Language, status, port, pid, uptime)
 	}
 	return w.Flush()
 }
@@ -312,7 +316,11 @@ func cmdStart(args []string) error {
 	if err := saveService(s); err != nil {
 		return err
 	}
-	fmt.Printf("Started %s on port %d, pid %d.\n", s.Name, s.Port, pid)
+	if s.Port == 0 {
+		fmt.Printf("Started %s, pid %d.\n", s.Name, pid)
+	} else {
+		fmt.Printf("Started %s on port %d, pid %d.\n", s.Name, s.Port, pid)
+	}
 	return nil
 }
 

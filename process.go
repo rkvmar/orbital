@@ -77,7 +77,10 @@ func startProcess(s service, dir, logPath string) (int, error) {
 
 	cmd := exec.Command("sh", "-c", startScript(s))
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), fmt.Sprintf("PORT=%d", s.Port))
+	cmd.Env = os.Environ()
+	if s.Port != 0 {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("PORT=%d", s.Port))
+	}
 	for _, k := range envKeys(s.Env) {
 		cmd.Env = append(cmd.Env, k+"="+s.Env[k])
 	}

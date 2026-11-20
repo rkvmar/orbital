@@ -79,20 +79,3 @@ func listServices() ([]service, error) {
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
 }
-
-func nextPort(services []service) int {
-	port := 8080
-	for {
-		used := false
-		for _, s := range services {
-			if s.Port == port {
-				used = true
-				break
-			}
-		}
-		if !used {
-			return port
-		}
-		port++
-	}
-}

@@ -19,6 +19,7 @@ func envFilePath(name string) string {
 
 func defaultConfig(s service) string {
 	return fmt.Sprintf(`url = %s
+# port = 0 means the service does not listen on a port
 port = %d
 build = %s
 start = %s

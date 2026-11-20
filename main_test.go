@@ -22,13 +22,15 @@ func TestDeriveName(t *testing.T) {
 }
 
 func TestParsePort(t *testing.T) {
-	for _, raw := range []string{"0", "65536", "abc", "-1"} {
+	for _, raw := range []string{"65536", "abc", "-1"} {
 		if _, err := parsePort(raw); err == nil {
 			t.Errorf("parsePort(%q) unexpectedly succeeded", raw)
 		}
 	}
-	if got, err := parsePort("9090"); err != nil || got != 9090 {
-		t.Errorf("parsePort(9090) = %d, %v", got, err)
+	for raw, want := range map[string]int{"0": 0, "9090": 9090} {
+		if got, err := parsePort(raw); err != nil || got != want {
+			t.Errorf("parsePort(%q) = %d, %v, want %d", raw, got, err, want)
+		}
 	}
 }
 
@@ -125,6 +127,23 @@ func TestDefaultConfigFilled(t *testing.T) {
 	}
 }
 
+func TestPortlessService(t *testing.T) {
+	t.Setenv("ORBITAL_HOME", t.TempDir())
+	if err := os.MkdirAll(filepath.Join(serviceDir("demo"), "repo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath("demo"), []byte("port = 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(envFilePath("demo"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := resolve(service{Name: "demo"})
+	if err != nil || got.Port != 0 {
+		t.Fatalf("portless resolve = %+v, %v", got, err)
+	}
+}
+
 func TestResolve(t *testing.T) {
 	t.Setenv("ORBITAL_HOME", t.TempDir())
 	repo := filepath.Join(serviceDir("demo"), "repo")
@@ -191,13 +210,6 @@ func TestInvalidConfigValues(t *testing.T) {
 		if _, err := resolve(service{Name: "demo"}); err == nil {
 			t.Errorf("expected resolve to reject %q", body)
 		}
-	}
-}
-
-func TestNextPort(t *testing.T) {
-	services := []service{{Port: 8080}, {Port: 8081}}
-	if got := nextPort(services); got != 8082 {
-		t.Errorf("nextPort = %d, want 8082", got)
 	}
 }
 
