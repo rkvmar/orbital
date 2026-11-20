@@ -5,7 +5,7 @@ a tiny local deploy system
 ## Install
 
 ```sh
-./install.sh
+curl -LsSf https://raw.githubusercontent.com/rkvmar/orbital/main/install-remote.sh | sh
 ```
 
 ## Usage
