@@ -5,6 +5,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -17,7 +19,12 @@ func alive(pid int) bool {
 	if err != nil {
 		return false
 	}
-	return p.Signal(syscall.Signal(0)) == nil
+	if p.Signal(syscall.Signal(0)) != nil {
+		return false
+	}
+	// A zombie still answers signal 0 but is already gone.
+	out, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+	return err != nil || !strings.Contains(string(out), "Z")
 }
 
 func runLogged(dir, logPath string, env map[string]string, name string, args ...string) error {
@@ -75,11 +82,14 @@ func startProcess(s service, dir, logPath string) (int, error) {
 	}
 	defer f.Close()
 
-	cmd := exec.Command("sh", "-c", startScript(s))
+	cmd := exec.Command("/bin/sh", "-c", startScript(s))
 	cmd.Dir = dir
 	cmd.Env = os.Environ()
 	if s.Port != 0 {
 		cmd.Env = append(cmd.Env, fmt.Sprintf("PORT=%d", s.Port))
+	}
+	if s.Kind == "db" {
+		cmd.Env = append(cmd.Env, "DATA_DIR="+s.DataDir, "DB_NAME="+s.Name, "DB_PASSWORD="+s.Password)
 	}
 	for _, k := range envKeys(s.Env) {
 		cmd.Env = append(cmd.Env, k+"="+s.Env[k])

@@ -20,6 +20,10 @@ type service struct {
 	RestartOnCrash bool              `json:"restartOnCrash,omitempty"`
 	MemoryLimitMB  int               `json:"memoryLimitMB,omitempty"`
 	Env            map[string]string `json:"env,omitempty"`
+	Kind           string            `json:"kind,omitempty"`
+	DBType         string            `json:"dbType,omitempty"`
+	DataDir        string            `json:"dataDir,omitempty"`
+	Password       string            `json:"password,omitempty"`
 	StartedAt      time.Time         `json:"startedAt"`
 }
 
@@ -35,6 +39,14 @@ func serviceDir(name string) string {
 	return filepath.Join(rootDir(), "services", name)
 }
 
+func serviceWorkDir(s service) string {
+	dir := serviceDir(s.Name)
+	if s.Kind == "db" {
+		return dir
+	}
+	return filepath.Join(dir, "repo")
+}
+
 func saveService(s service) error {
 	dir := serviceDir(s.Name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -44,7 +56,7 @@ func saveService(s service) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "state.json"), data, 0o644)
+	return os.WriteFile(filepath.Join(dir, "state.json"), data, 0o600)
 }
 
 func loadService(name string) (service, error) {

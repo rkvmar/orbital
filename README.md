@@ -20,4 +20,5 @@ orbital start <name>
 orbital status
 orbital log <name>
 orbital remove <name>
+orbital db add <type> <name>
 ```

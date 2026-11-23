@@ -44,6 +44,8 @@ func main() {
 		err = cmdStart(os.Args[2:])
 	case "remove":
 		err = cmdRemove(os.Args[2:])
+	case "db":
+		err = cmdDB(os.Args[2:])
 	case "help", "-h", "--help":
 		usage()
 		return
@@ -61,7 +63,7 @@ func main() {
 func usage() {
 	fmt.Print(`Usage:
   orbital launch <git-url> [name]   clone, build and start a service
-  orbital update <name>             rebuild and restart from its git URL
+  orbital update <name>             rebuild/restart a service, or apply config to a database
   orbital config <name>             edit config.toml (blank = detected default)
   orbital env <name>                edit the service's .env file
   orbital status                    list all services
@@ -69,6 +71,7 @@ func usage() {
   orbital stop <name>               stop a service
   orbital start <name>              start a stopped service
   orbital remove <name>             delete a service
+  orbital db add <type> [flags]     add a database as a service (installs binaries if needed)
 `)
 }
 
@@ -94,6 +97,20 @@ func cmdUpdate(args []string) error {
 	s, err := loadService(args[0])
 	if err != nil {
 		return err
+	}
+	if s.Kind == "db" {
+		resolved, err := resolve(s)
+		if err != nil {
+			return err
+		}
+		if err := saveService(resolved); err != nil {
+			return err
+		}
+		if err := restartService(resolved); err != nil {
+			return err
+		}
+		fmt.Printf("Updated %s.\n", s.Name)
+		return nil
 	}
 	return deploy(s.URL, s.Name)
 }
@@ -170,7 +187,7 @@ func deploy(url, name string) error {
 	logPath := filepath.Join(dir, "log.txt")
 	if s.BuildCmd != "" {
 		fmt.Printf("Building %s (%s)...\n", name, s.Language)
-		if err := runLogged(repo, logPath, s.Env, "sh", "-c", s.BuildCmd); err != nil {
+		if err := runLogged(repo, logPath, s.Env, "/bin/sh", "-c", s.BuildCmd); err != nil {
 			return fmt.Errorf("build failed (see %s): %w", logPath, err)
 		}
 	}
@@ -202,7 +219,7 @@ func restartService(s service) error {
 	}
 	_ = stopProcess(s.PID)
 	dir := serviceDir(s.Name)
-	pid, err := startProcess(s, filepath.Join(dir, "repo"), filepath.Join(dir, "log.txt"))
+	pid, err := startProcess(s, serviceWorkDir(s), filepath.Join(dir, "log.txt"))
 	if err != nil {
 		return err
 	}
@@ -308,7 +325,7 @@ func cmdStart(args []string) error {
 		return nil
 	}
 	dir := serviceDir(s.Name)
-	pid, err := startProcess(s, filepath.Join(dir, "repo"), filepath.Join(dir, "log.txt"))
+	pid, err := startProcess(s, serviceWorkDir(s), filepath.Join(dir, "log.txt"))
 	if err != nil {
 		return err
 	}
