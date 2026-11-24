@@ -174,6 +174,37 @@ func TestResolve(t *testing.T) {
 	}
 }
 
+func TestExpandEnvRefs(t *testing.T) {
+	t.Setenv("ORBITAL_HOME", t.TempDir())
+	for _, s := range []service{
+		{Name: "postgres", Kind: "db", URL: "postgres://u:p@localhost:5433/postgres"},
+		{Name: "my-app", URL: "https://example.com/app.git"},
+	} {
+		if err := saveService(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := expandEnvRefs(map[string]string{
+		"DATABASE_URL": "$POSTGRES_URL$",
+		"NESTED":       "prefix=$MY-APP_URL$ suffix",
+		"LOWER":        "$postgres_url$",
+		"UNKNOWN":      "$NOPE_URL$",
+		"PLAIN":        "unchanged",
+	})
+	want := map[string]string{
+		"DATABASE_URL": "postgres://u:p@localhost:5433/postgres",
+		"NESTED":       "prefix=https://example.com/app.git suffix",
+		"LOWER":        "postgres://u:p@localhost:5433/postgres",
+		"UNKNOWN":      "$NOPE_URL$",
+		"PLAIN":        "unchanged",
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("expandEnvRefs[%q] = %q, want %q", k, got[k], v)
+		}
+	}
+}
+
 func TestStartScript(t *testing.T) {
 	s := service{StartCmd: "./app"}
 	if got := startScript(s); !strings.Contains(got, "./app") || strings.Contains(got, "ps -Axo") {

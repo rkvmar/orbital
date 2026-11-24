@@ -36,8 +36,9 @@ func runLogged(dir, logPath string, env map[string]string, name string, args ...
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
 	cmd.Env = os.Environ()
-	for _, k := range envKeys(env) {
-		cmd.Env = append(cmd.Env, k+"="+env[k])
+	resolved := expandEnvRefs(env)
+	for _, k := range envKeys(resolved) {
+		cmd.Env = append(cmd.Env, k+"="+resolved[k])
 	}
 	out := io.MultiWriter(os.Stdout, f)
 	cmd.Stdout, cmd.Stderr = out, out
@@ -91,8 +92,9 @@ func startProcess(s service, dir, logPath string) (int, error) {
 	if s.Kind == "db" {
 		cmd.Env = append(cmd.Env, "DATA_DIR="+s.DataDir, "DB_NAME="+s.Name, "DB_PASSWORD="+s.Password)
 	}
-	for _, k := range envKeys(s.Env) {
-		cmd.Env = append(cmd.Env, k+"="+s.Env[k])
+	resolved := expandEnvRefs(s.Env)
+	for _, k := range envKeys(resolved) {
+		cmd.Env = append(cmd.Env, k+"="+resolved[k])
 	}
 	cmd.Stdout, cmd.Stderr = f, f
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

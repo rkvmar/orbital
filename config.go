@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -58,6 +59,35 @@ func serializeEnv(env map[string]string) string {
 		fmt.Fprintf(&b, "%s=%s\n", k, env[k])
 	}
 	return b.String()
+}
+
+var serviceURLRef = regexp.MustCompile(`(?i)\$([A-Za-z0-9][A-Za-z0-9_-]*_URL)\$`)
+
+// expandEnvRefs resolves $SERVICE_URL$ placeholders against deployed services.
+func expandEnvRefs(env map[string]string) map[string]string {
+	if len(env) == 0 {
+		return env
+	}
+	services, err := listServices()
+	if err != nil {
+		return env
+	}
+	urls := make(map[string]string, len(services))
+	for _, s := range services {
+		if s.URL != "" {
+			urls[strings.ToUpper(s.Name)+"_URL"] = s.URL
+		}
+	}
+	out := make(map[string]string, len(env))
+	for k, v := range env {
+		out[k] = serviceURLRef.ReplaceAllStringFunc(v, func(ref string) string {
+			if url, ok := urls[strings.ToUpper(strings.Trim(ref, "$"))]; ok {
+				return url
+			}
+			return ref
+		})
+	}
+	return out
 }
 
 func parseEnvFile(raw string) (map[string]string, error) {
